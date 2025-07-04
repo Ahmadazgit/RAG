@@ -1,0 +1,130 @@
+import os
+from dotenv import load_dotenv
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import TextLoader
+from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
+from langchain_community.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+
+# 1. Load Environment Variables
+load_dotenv()
+
+# Get Azure-specific environment variables for GENERATIVE model
+azure_gen_api_key = os.getenv("AZURE_OPENAI_GEN_API_KEY")
+azure_gen_endpoint = os.getenv("AZURE_OPENAI_GEN_ENDPOINT")
+azure_gen_api_version = os.getenv("AZURE_OPENAI_GEN_API_VERSION")
+azure_chat_deployment_name = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+
+# Get Azure-specific environment variables for EMBEDDING model
+azure_embed_api_key = os.getenv("AZURE_OPENAI_EMBED_API_KEY")
+azure_embed_endpoint = os.getenv("AZURE_OPENAI_EMBED_ENDPOINT")
+azure_embed_api_version = os.getenv("AZURE_OPENAI_EMBED_API_VERSION")
+azure_embedding_deployment_name = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
+
+# Basic validation (updated to check all necessary vars)
+if not all([azure_gen_api_key, azure_gen_endpoint, azure_gen_api_version,
+            azure_chat_deployment_name, azure_embed_api_key,
+            azure_embed_endpoint, azure_embed_api_version,
+            azure_embedding_deployment_name]):
+    raise ValueError(
+        "Azure OpenAI environment variables for both generative and embedding models "
+        "not found. Please set all required AZURE_OPENAI_GEN_*, AZURE_OPENAI_EMBED_*, "
+        "and corresponding DEPLOYMENT_NAMEs in your .env file."
+    )
+
+# 2. Data Loading and Chunking
+def load_and_chunk_documents(file_path: str): # THIS FUNCTION WAS MISSING
+    print(f"Loading documents from {file_path}...")
+    loader = TextLoader(file_path)
+    documents = loader.load()
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len,
+        add_start_index=True,
+    )
+    chunks = text_splitter.split_documents(documents)
+    print(f"Split {len(documents)} document(s) into {len(chunks)} chunks.")
+    return chunks
+
+# 3. Create Embeddings and Vector Store (Indexing Phase)
+def create_vector_store(chunks):
+    print("Creating embeddings and building vector store (ChromaDB) using Azure OpenAI...")
+    embeddings = AzureOpenAIEmbeddings(
+        azure_deployment=azure_embedding_deployment_name,
+        openai_api_version=azure_embed_api_version, # Use embedding-specific API version
+        azure_endpoint=azure_embed_endpoint,       # Use embedding-specific endpoint
+        openai_api_key=azure_embed_api_key         # Use embedding-specific API key
+    )
+
+    vectorstore = Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        persist_directory="./chroma_db"
+    )
+    print("Vector store created and persisted.")
+    return vectorstore
+
+# 4. Initialize LLM and RAG Chain
+def initialize_rag_chain(vectorstore):
+    print("Initializing LLM and RAG chain using Azure OpenAI...")
+    llm = AzureChatOpenAI(
+        azure_deployment=azure_chat_deployment_name,
+        openai_api_version=azure_gen_api_version,  # Use generative-specific API version
+        azure_endpoint=azure_gen_endpoint,        # Use generative-specific endpoint
+        openai_api_key=azure_gen_api_key,          # Use generative-specific API key
+        temperature=0.7
+    )
+
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        chain_type="stuff",
+        retriever=vectorstore.as_retriever(),
+        return_source_documents=True
+    )
+    print("RAG chain initialized.")
+    return qa_chain
+
+# Main execution (updated for loading existing DB with correct embedding setup)
+if __name__ == "__main__":
+    knowledge_file = "knowledge_base.txt"
+
+    # Call the defined function
+    document_chunks = load_and_chunk_documents(knowledge_file)
+
+    if os.path.exists("./chroma_db"):
+        print("Loading existing ChromaDB vector store...")
+        # IMPORTANT: Ensure the embedding function for loading matches the one used for creation
+        embeddings = AzureOpenAIEmbeddings(
+            azure_deployment=azure_embedding_deployment_name,
+            openai_api_version=azure_embed_api_version,
+            azure_endpoint=azure_embed_endpoint,
+            openai_api_key=azure_embed_api_key
+        )
+        vector_db = Chroma(
+            persist_directory="./chroma_db",
+            embedding_function=embeddings
+        )
+    else:
+        vector_db = create_vector_store(document_chunks)
+
+    rag_chain = initialize_rag_chain(vector_db)
+
+    print("\n--- Azure RAG System Ready! Ask your questions. (Type 'exit' to quit) ---")
+    while True:
+        query = input("\nYour question: ")
+        if query.lower() == 'exit':
+            print("Exiting RAG system. Goodbye!")
+            break
+
+        print("Searching and generating response...")
+        response = rag_chain.invoke({"query": query})
+
+        print("\n--- Answer ---")
+        print(response["result"])
+
+        print("\n--- Sources Used ---")
+        for doc in response["source_documents"]:
+            print(f"- {doc.page_content} (Source: {doc.metadata.get('source', 'Unknown')}, Start Index: {doc.metadata.get('start_index', 'Unknown')})")
+        print("--------------------\n")
