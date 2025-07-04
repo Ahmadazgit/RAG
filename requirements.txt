@@ -34,7 +34,7 @@ python-docx==1.2.0
 python-dotenv==1.0.0
 PyYAML==6.0.2
 SQLAlchemy==2.0.41
-streamlit==1.46.1
+streamlit
 unstructured==0.18.2
 unstructured-client==0.37.4
 unstructured-inference==1.0.5
